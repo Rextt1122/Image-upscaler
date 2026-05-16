@@ -4,6 +4,7 @@ import uuid
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 
@@ -19,30 +20,47 @@ app.add_middleware(
 )
 
 @app.post("/upscale")
-async def upscale_image(file: UploadFile = File(...), scale: str = Form("4")):
-    unique_id = str(uuid.uuid4())
-    input_path = f"in_{unique_id}.png"
+async def upscale_image(
+    file: UploadFile = File(...), 
+    scale: str = Form("4"),
+    model: str = Form("realesrgan-x4plus")
+):
+    unique_id = str(uuid.uuid4())[:8] # Short suffix
+    original_name = os.path.splitext(file.filename)[0]
+    ext = os.path.splitext(file.filename)[1] or ".png"
+    input_path = f"in_{unique_id}{ext}"
     
-    output_filename = f"upscaled_{scale}x_{unique_id}.png"
+    output_filename = f"{original_name}_upscaled_{scale}x.png"
     output_path = os.path.join(RESULT_DIR, output_filename)
     
-    with open(input_path, "wb") as buffer:
-        buffer.write(await file.read())
-
-    command = [
-        "realesrgan-ncnn-vulkan.exe", 
-        "-i", input_path, 
-        "-o", output_path, 
-        "-n", "realesrgan-x4plus",
-        "-s", scale 
-    ]
-    
     try:
-        subprocess.run(command, check=True)
-        if os.path.exists(input_path):
-            os.remove(input_path)
+        content = await file.read()
+        with open(input_path, "wb") as buffer:
+            buffer.write(content)
+
+        exe_path = os.path.join(os.path.dirname(__file__), "realesrgan-ncnn-vulkan.exe")
+        command = [
+            exe_path, 
+            "-i", input_path, 
+            "-o", output_path, 
+            "-n", model,
+            "-s", scale 
+        ]
+        
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            return {"error": result.stderr or result.stdout or "Unknown EXE error"}
+            
         return FileResponse(output_path)
     except Exception as e:
-        if os.path.exists(input_path):
-            os.remove(input_path)
         return {"error": str(e)}
+    finally:
+        if os.path.exists(input_path):
+            try: os.remove(input_path)
+            except: pass
+
+app.mount("/", StaticFiles(directory=".", html=True), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
